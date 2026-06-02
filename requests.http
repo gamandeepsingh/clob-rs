@@ -1,0 +1,70 @@
+@base = http://localhost:3000
+
+### Get current order book
+GET {{base}}/orderbook
+
+
+### Place a limit sell order — sell 5 units @ $100.00
+POST {{base}}/orders
+Content-Type: application/json
+
+{
+  "side": "sell",
+  "order_type": "limit",
+  "price": 10000,
+  "quantity": 5
+}
+
+
+### Place another limit sell order — sell 3 units @ $102.00
+POST {{base}}/orders
+Content-Type: application/json
+
+{
+  "side": "sell",
+  "order_type": "limit",
+  "price": 10200,
+  "quantity": 3
+}
+
+
+### Place a limit buy order — buy 7 units @ $103.00 (sweeps both sells above)
+POST {{base}}/orders
+Content-Type: application/json
+
+{
+  "side": "buy",
+  "order_type": "limit",
+  "price": 10300,
+  "quantity": 7
+}
+
+
+### Place a resting limit buy order — sits in book (no matching sell)
+POST {{base}}/orders
+Content-Type: application/json
+
+{
+  "side": "buy",
+  "order_type": "limit",
+  "price": 9800,
+  "quantity": 10
+}
+
+
+### Place a market buy order — fills immediately at best ask, no price needed
+POST {{base}}/orders
+Content-Type: application/json
+
+{
+  "side": "buy",
+  "order_type": "market",
+  "quantity": 2
+}
+
+
+### Get order book after all orders — should show spread
+GET {{base}}/orderbook
+
+# WebSocket (open in a WS client like wscat or Postman):
+# wscat -c ws://localhost:3000/ws

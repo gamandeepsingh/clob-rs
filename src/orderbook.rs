@@ -46,19 +46,19 @@ impl OrderBook {
         self.asks.first_key_value().map(|(price, _)| *price)
     }
 
-    /// Peek at the front order at the best ask level (lowest price, earliest arrival).
-    pub fn best_ask_order(&mut self) -> Option<&mut Order> {
-        self.asks
-            .first_entry()
-            .and_then(|e| e.into_mut().front_mut())
-    }
+    // /// Peek at the front order at the best ask level (lowest price, earliest arrival).
+    // pub fn best_ask_order(&mut self) -> Option<&mut Order> {
+    //     self.asks
+    //         .first_entry()
+    //         .and_then(|e| e.into_mut().front_mut())
+    // }
 
-    /// Peek at the front order at the best bid level (highest price, earliest arrival).
-    pub fn best_bid_order(&mut self) -> Option<&mut Order> {
-        self.bids
-            .first_entry()
-            .and_then(|e| e.into_mut().front_mut())
-    }
+    // /// Peek at the front order at the best bid level (highest price, earliest arrival).
+    // pub fn best_bid_order(&mut self) -> Option<&mut Order> {
+    //     self.bids
+    //         .first_entry()
+    //         .and_then(|e| e.into_mut().front_mut())
+    // }
 
     /// Remove and return the front order at the best ask level.
     pub fn pop_best_ask(&mut self) -> Option<Order> {
@@ -102,5 +102,21 @@ impl OrderBook {
 
     pub fn spread(&self) -> Option<u64> {
         Some(self.best_ask()?.checked_sub(self.best_bid()?)?)
+    }
+
+    /// All bid levels (price, total_qty) sorted highest price first.
+    pub fn bids_snapshot(&self) -> Vec<(u64, u64)> {
+        self.bids.iter().map(|(Reverse(price), queue)| {
+            let qty: u64 = queue.iter().map(|o| o.remaining).sum();
+            (*price, qty)
+        }).collect()
+    }
+
+    /// All ask levels (price, total_qty) sorted lowest price first.
+    pub fn asks_snapshot(&self) -> Vec<(u64, u64)> {
+        self.asks.iter().map(|(price, queue)| {
+            let qty: u64 = queue.iter().map(|o| o.remaining).sum();
+            (*price, qty)
+        }).collect()
     }
 }

@@ -16,8 +16,8 @@ impl Engine {
         }
     }
 
-    /// Submit a new order. Returns all trades that were produced.
-    pub fn submit(&mut self, side: Side, order_type: OrderType, price: u64, quantity: u64) -> Vec<Trade> {
+    /// Submit a new order. Returns (assigned_order_id, trades_produced).
+    pub fn submit(&mut self, side: Side, order_type: OrderType, price: u64, quantity: u64) -> (u64, Vec<Trade>) {
         let id = self.next_id();
         let ts = now_micros();
         let mut incoming = Order::new(id, side, order_type, price, quantity, ts);
@@ -97,7 +97,7 @@ impl Engine {
             self.book.add_limit_order(incoming);
         }
 
-        trades
+        (id, trades)
     }
 
     pub fn best_bid(&self) -> Option<u64> {
@@ -110,6 +110,14 @@ impl Engine {
 
     pub fn spread(&self) -> Option<u64> {
         self.book.spread()
+    }
+
+    pub fn bids_snapshot(&self) -> Vec<(u64, u64)> {
+        self.book.bids_snapshot()
+    }
+
+    pub fn asks_snapshot(&self) -> Vec<(u64, u64)> {
+        self.book.asks_snapshot()
     }
 
     fn next_id(&mut self) -> u64 {

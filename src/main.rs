@@ -1,33 +1,44 @@
+mod api;
+mod db;
 mod engine;
 mod models;
 mod orderbook;
 
-use engine::Engine;
-use models::{OrderType, Side};
+use std::sync::{Arc, Mutex};
 
-fn main() {
-    let mut eng = Engine::new();
+use tokio::sync::broadcast;
 
-    // Two resting sell limit orders sitting in the book.
-    eng.submit(Side::Sell, OrderType::Limit, 10_000, 5);  // sell 5 @ $100.00
-    eng.submit(Side::Sell, OrderType::Limit, 10_200, 3);  // sell 3 @ $102.00
+#[tokio::main]
+async fn main() {
+    dotenvy::dotenv().ok(); // loads .env if present, silently ignored if missing
 
-    println!("Best ask: {:?}", eng.best_ask());  // should be 10_000
-    println!("Best bid: {:?}", eng.best_bid());  // None — no buyers yet
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set (e.g. postgres://user:pass@localhost/clob)");
 
-    // A buyer comes in willing to pay up to $103.00 for 7 units.
-    // Should sweep the $100 level (5 units) and the $102 level (2 units).
-    let trades = eng.submit(Side::Buy, OrderType::Limit, 10_300, 7);
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "3000".to_string());
 
-    println!("\nTrades produced: {}", trades.len());
-    for t in &trades {
-        println!(
-            "  trade: qty={} @ price={} (buy_order={}, sell_order={})",
-            t.quantity, t.price, t.buy_order_id, t.sell_order_id
-        );
-    }
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .expect("failed to connect to PostgreSQL");
 
-    // One sell order still has 1 unit left at $102 (we only bought 2 of its 3).
-    println!("\nBest ask after match: {:?}", eng.best_ask());  // 10_200
-    println!("Spread: {:?}", eng.spread());                    // None — no bids left
+    db::init(&pool).await.expect("failed to create tables");
+
+    // Channel capacity 256: if a slow WebSocket client falls more than 256
+    // events behind it gets a Lagged error and skips ahead — it won't block others.
+    let (tx, _) = broadcast::channel::<api::WsEvent>(256);
+
+    let state = api::AppState {
+        engine: Arc::new(Mutex::new(engine::Engine::new())),
+        db: pool,
+        tx,
+    };
+
+    let addr = format!("0.0.0.0:{port}");
+    let app = api::router(state);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    println!("CLOB listening on http://{addr}");
+    axum::serve(listener, app).await.unwrap();
 }
