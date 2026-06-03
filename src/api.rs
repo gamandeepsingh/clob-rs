@@ -15,23 +15,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
-use crate::{db, engine::Engine, models::{OrderType, Side, Trade}};
-
-// ── Shared state ─────────────────────────────────────────────────────────────
+use crate::{db, engine::Engine, models::{OrderType, Side, Trade}, solana::SolanaClient};
 
 #[derive(Clone)]
 pub struct AppState {
-    /// std::sync::Mutex because matching is pure sync — never held across .await.
     pub engine: Arc<Mutex<Engine>>,
     pub db: PgPool,
-    /// Broadcast channel: one sender, every WebSocket connection gets a receiver.
     pub tx: broadcast::Sender<WsEvent>,
+    pub solana: Option<Arc<SolanaClient>>,
 }
 
-// ── WebSocket event types ─────────────────────────────────────────────────────
-
-/// Every connected WebSocket client receives these as JSON.
-/// The `tag` field means the JSON looks like: {"type":"trade","data":{...}}
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum WsEvent {
@@ -46,13 +39,10 @@ pub struct BookSummary {
     pub spread: Option<u64>,
 }
 
-// ── HTTP request / response shapes ───────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct OrderRequest {
     pub side: Side,
     pub order_type: OrderType,
-    /// Required for limit orders, omit for market orders.
     pub price: Option<u64>,
     pub quantity: u64,
 }
@@ -76,8 +66,6 @@ pub struct OrderBookSnapshot {
     pub spread: Option<u64>,
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
-
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/orders", post(submit_order))
@@ -86,40 +74,65 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
 async fn submit_order(
     State(state): State<AppState>,
     Json(req): Json<OrderRequest>,
 ) -> Result<Json<OrderResponse>, StatusCode> {
     let price = req.price.unwrap_or(0);
 
-    // Hold the mutex only for the synchronous matching loop, then drop it
-    // before any async work so we don't block other requests.
     let (order_id, trades, best_bid, best_ask, spread) = {
-        let mut engine = state
-            .engine
-            .lock()
+        let mut engine = state.engine.lock()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let (order_id, trades) = engine.submit(req.side, req.order_type, price, req.quantity);
         let best_bid = engine.best_bid();
         let best_ask = engine.best_ask();
         let spread = engine.spread();
         (order_id, trades, best_bid, best_ask, spread)
-    }; // ← lock released here
+    };
 
-    // Persist to DB (errors are logged but don't fail the response).
     let now = now_micros();
-    if let Err(e) = db::save_order(&state.db, order_id, req.side.as_str(), req.order_type.as_str(), price, req.quantity, now).await {
-        eprintln!("db save_order error: {e}");
-    }
+
+    // DB writes are fail-fast: if either fails we return 500 before touching the outbox.
+    db::save_order(&state.db, order_id, req.side.as_str(), req.order_type.as_str(), price, req.quantity, now)
+        .await.map_err(|e| { eprintln!("db save_order: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
+
     for trade in &trades {
-        if let Err(e) = db::save_trade(&state.db, trade).await {
-            eprintln!("db save_trade error: {e}");
+        db::save_trade(&state.db, trade)
+            .await.map_err(|e| { eprintln!("db save_trade: {e}"); StatusCode::INTERNAL_SERVER_ERROR })?;
+    }
+
+    // If Solana is configured, enqueue events to the outbox.
+    // The background worker picks these up and retries on failure — no data is lost.
+    if state.solana.is_some() {
+        let side_byte = req.side as u8;
+        let ot_byte   = req.order_type as u8;
+
+        let place_payload = serde_json::json!({
+            "in_memory_id": order_id,
+            "side": side_byte,
+            "order_type": ot_byte,
+            "price": price,
+            "quantity": req.quantity,
+        }).to_string();
+
+        if let Err(e) = db::enqueue(&state.db, "place_order", &place_payload, now).await {
+            eprintln!("outbox enqueue place_order: {e}");
+        }
+
+        for trade in &trades {
+            let settle_payload = serde_json::json!({
+                "buy_in_memory_id":  trade.buy_order_id,
+                "sell_in_memory_id": trade.sell_order_id,
+                "fill_qty":          trade.quantity,
+                "price":             trade.price,
+            }).to_string();
+
+            if let Err(e) = db::enqueue(&state.db, "settle_match", &settle_payload, now).await {
+                eprintln!("outbox enqueue settle_match: {e}");
+            }
         }
     }
 
-    // Broadcast to all WebSocket subscribers.
     for trade in &trades {
         let _ = state.tx.send(WsEvent::Trade(trade.clone()));
     }
@@ -160,13 +173,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 match result {
                     Ok(event) => {
                         let text = serde_json::to_string(&event).unwrap_or_default();
-                        if socket.send(Message::Text(text)).await.is_err() {
-                            return; // client disconnected
-                        }
+                        if socket.send(Message::Text(text)).await.is_err() { return; }
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
-                    // Lagged means the client was too slow and missed some events.
-                    // We just continue — no need to disconnect.
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 }
             }

@@ -1,7 +1,12 @@
-# ── build ────────────────────────────────────────────────────────────
+# ── build ─────────────────────────────────────────────────────────────────────
 FROM rust:1.85-slim AS builder
 
 WORKDIR /app
+
+# openssl-sys (pulled in by solana-client) needs these at compile time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies separately from source so rebuilds are fast.
 COPY Cargo.toml Cargo.lock ./
@@ -13,13 +18,13 @@ RUN rm -rf src
 COPY src ./src
 RUN touch src/main.rs && cargo build --release
 
-# ── run ──────────────────────────────────────────────────────────────
+# ── run ───────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-# ca-certificates is needed to verify SSL when connecting to cloud databases
-# (e.g. Neon, Supabase). Not needed for a plain local Postgres.
+# libssl3       → runtime TLS for Solana RPC and cloud DB connections
+# ca-certificates → verify SSL certs (Neon, Supabase, devnet RPC)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends libssl3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

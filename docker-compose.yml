@@ -24,6 +24,17 @@ services:
     environment:
       DATABASE_URL: postgres://clob:clob@db:5432/clob
       PORT: 3000
+      # ── Solana (optional) ───────────────────────────────────────────────────
+      # Uncomment and fill these to enable on-chain order/trade recording.
+      # SOLANA_RPC_URL: https://api.devnet.solana.com
+      # SOLANA_KEYPAIR_PATH: /app/keypair.json
+      # SOLANA_PROGRAM_ID: gm4yiTdk1Mv8menRGpRPqbXQTQNgKny1bP35Gaz8FCa
+      # SOLANA_BASE_MINT: So11111111111111111111111111111111111111112
+      # SOLANA_QUOTE_MINT: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+    volumes:
+      # Mount your Solana keypair when Solana recording is enabled.
+      # - ~/.config/solana/id.json:/app/keypair.json:ro
+      []
     depends_on:
       db:
         condition: service_healthy
